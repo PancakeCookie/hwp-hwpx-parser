@@ -406,6 +406,12 @@ class HWPXReader:
         tag = self._local_name(elem.tag)
 
         if tag == "p":
+            # Handle page break
+            if options.page_break_marker:
+                page_break = elem.get("pageBreak", "0")
+                if page_break == "1":
+                    result.append(options.page_break_marker)
+
             para_text = self._extract_paragraph_text(elem, options)
             if para_text.strip() or options.include_empty_paragraphs:
                 result.append(para_text)

@@ -42,6 +42,7 @@ class ExtractOptions:
     paragraph_separator: str = "\n\n"
     line_separator: str = "\n"
     include_empty_paragraphs: bool = False
+    page_break_marker: Optional[str] = None  # If set, insert marker at page breaks
 
 
 @dataclass
