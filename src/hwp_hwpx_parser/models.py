@@ -52,9 +52,11 @@ class TableData:
 
     Attributes:
         rows: 2D list of cell contents [[cell1, cell2], [cell3, cell4], ...]
+        has_header_style: True if first row has background color (header style)
     """
 
     rows: List[List[str]] = field(default_factory=list)
+    has_header_style: bool = False
 
     def to_markdown(self) -> str:
         """Convert to markdown format."""
@@ -273,8 +275,13 @@ def detect_image_format(data: bytes) -> str:
         return "gif"
     if data.startswith(b"BM"):
         return "bmp"
+    # Standard WMF (METAHEADER - mtType=1, mtHeaderSize=9)
+    # Must check before EMF since both start with 0x01 0x00
+    if data.startswith(b"\x01\x00\x09\x00"):
+        return "wmf"
     if data.startswith(b"\x01\x00\x00\x00"):
         return "emf"
+    # Placeable WMF (ALDUS header)
     if data.startswith(b"\xd7\xcd\xc6\x9a"):
         return "wmf"
 

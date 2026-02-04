@@ -31,6 +31,7 @@ class HWPXReader:
         self._zipfile = None
         self._image_index = 0
         self._bin_item_map: Dict[str, str] = {}
+        self._border_fill_map: Dict[str, Optional[str]] = {}  # borderFillID -> faceColor
         self._footnotes: List[NoteData] = []
         self._endnotes: List[NoteData] = []
         self._hyperlinks: List[tuple] = []
@@ -109,6 +110,58 @@ class HWPXReader:
                         self._bin_item_map[item_id] = filename
         except Exception:
             pass
+
+    def _load_border_fill_map(self):
+        """Load borderFill ID -> faceColor mapping from header.xml."""
+        if self._border_fill_map:
+            return
+
+        try:
+            zf = self._open()
+            header_path = "Contents/header.xml"
+            if header_path not in zf.namelist():
+                return
+
+            header_xml = zf.read(header_path)
+            root = ET.fromstring(header_xml)
+
+            for elem in root.iter():
+                tag = self._local_name(elem.tag)
+                if tag == "borderFill":
+                    fill_id = elem.get("id", "")
+                    if fill_id:
+                        face_color = self._extract_face_color(elem)
+                        self._border_fill_map[fill_id] = face_color
+        except Exception:
+            pass
+
+    def _extract_face_color(self, border_fill_elem: ET.Element) -> Optional[str]:
+        """Extract faceColor from borderFill element."""
+        for elem in border_fill_elem.iter():
+            tag = self._local_name(elem.tag)
+            if tag == "winBrush":
+                return elem.get("faceColor")
+            elif tag == "gradation":
+                # gradation도 배경색으로 간주
+                return "gradation"
+        return None
+
+    def _has_background_color(self, color: Optional[str]) -> bool:
+        """Check if the color represents a visible background (non-white)."""
+        if not color:
+            return False
+        if color == "gradation":
+            return True
+        # 색상 형식: "RGB(255, 255, 255)" 또는 "none" 등
+        color_lower = color.lower()
+        if color_lower in ("none", "transparent"):
+            return False
+        # 흰색 체크 (다양한 형식)
+        if "255, 255, 255" in color or "255,255,255" in color:
+            return False
+        if color_lower == "#ffffff" or color_lower == "ffffff":
+            return False
+        return True
 
     def _get_bin_items_with_path(self) -> Dict[str, Tuple[str, str]]:
         """Load binItem id -> (filename, src_path) mapping.
@@ -544,32 +597,59 @@ class HWPXReader:
 
     def _extract_table(self, tbl_elem: ET.Element) -> TableData:
         rows = []
-        self._find_direct_rows(tbl_elem, rows)
-        return TableData(rows=rows)
+        first_row_border_fill_ids = []
+        self._find_direct_rows(tbl_elem, rows, first_row_border_fill_ids)
 
-    def _find_direct_rows(self, elem: ET.Element, rows: List[List[str]]) -> None:
+        # 첫 행 셀의 배경색 확인
+        has_header_style = False
+        if first_row_border_fill_ids:
+            self._load_border_fill_map()
+            for fill_id in first_row_border_fill_ids:
+                if fill_id:
+                    face_color = self._border_fill_map.get(fill_id)
+                    if self._has_background_color(face_color):
+                        has_header_style = True
+                        break
+
+        return TableData(rows=rows, has_header_style=has_header_style)
+
+    def _find_direct_rows(
+        self, elem: ET.Element, rows: List[List[str]], first_row_border_fill_ids: List[str] = None
+    ) -> None:
         for child in elem:
             tag = self._local_name(child.tag)
             if tag == "tr":
-                row_cells = self._extract_table_row_direct(child)
+                is_first_row = len(rows) == 0
+                row_cells, border_fill_ids = self._extract_table_row_direct(child, collect_style=is_first_row)
                 if row_cells:
                     rows.append(row_cells)
+                    if is_first_row and first_row_border_fill_ids is not None:
+                        first_row_border_fill_ids.extend(border_fill_ids)
             elif tag != "tbl":
-                self._find_direct_rows(child, rows)
+                self._find_direct_rows(child, rows, first_row_border_fill_ids)
 
-    def _extract_table_row_direct(self, tr_elem: ET.Element) -> List[str]:
+    def _extract_table_row_direct(
+        self, tr_elem: ET.Element, collect_style: bool = False
+    ) -> Tuple[List[str], List[str]]:
         cells = []
-        self._find_direct_cells(tr_elem, cells)
-        return cells
+        border_fill_ids = []
+        self._find_direct_cells(tr_elem, cells, border_fill_ids if collect_style else None)
+        return cells, border_fill_ids
 
-    def _find_direct_cells(self, elem: ET.Element, cells: List[str]) -> None:
+    def _find_direct_cells(
+        self, elem: ET.Element, cells: List[str], border_fill_ids: List[str] = None
+    ) -> None:
         for child in elem:
             tag = self._local_name(child.tag)
             if tag == "tc":
                 cell_text = self._extract_cell_text_direct(child)
                 cells.append(cell_text)
+                if border_fill_ids is not None:
+                    # borderFillIDRef 속성 수집
+                    fill_id = child.get("borderFillIDRef") or child.get("borderFillId")
+                    border_fill_ids.append(fill_id)
             elif tag != "tbl":
-                self._find_direct_cells(child, cells)
+                self._find_direct_cells(child, cells, border_fill_ids)
 
     def _extract_cell_text_direct(self, tc_elem: ET.Element) -> str:
         texts: List[str] = []
